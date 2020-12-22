@@ -8,13 +8,30 @@ const Alexa = require('ask-sdk-core');
 const i18n = require('i18next');
 // i18n strings for all supported locales
 const languageStrings = require('./languageStrings');
+// session handler
+const sessionHandler = require('./lib/session.handler');
+// workout builder
+const workoutBuilder = require('./lib/workout.builder');
 
+/**
+ * Launches the application with user
+ *
+ * @type {{canHandle(*): boolean, handle(*=): *}}
+ */
 const LaunchRequestHandler = {
     canHandle(handlerInput) {
         return Alexa.getRequestType(handlerInput.requestEnvelope) === 'LaunchRequest';
     },
     handle(handlerInput) {
         const speakOutput = handlerInput.t('WELCOME_MSG');
+        const session = sessionHandler.getSession(handlerInput);
+        session.progress = {
+            total: 0,
+            skippedTotal: 0,
+            exercises: [],
+            skipped: []
+        };
+        sessionHandler.setSession(handlerInput, session);
 
         return handlerInput.responseBuilder
             .speak(speakOutput)
@@ -23,21 +40,62 @@ const LaunchRequestHandler = {
     }
 };
 
-const HelloWorldIntentHandler = {
+/**
+ * Selects a random workout
+ *
+ * @type {{canHandle(*): *, handle(*=): *}}
+ */
+const WorkoutIntentHandler = {
     canHandle(handlerInput) {
         return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest'
-            && Alexa.getIntentName(handlerInput.requestEnvelope) === 'HelloWorldIntent';
+            && Alexa.getIntentName(handlerInput.requestEnvelope) === 'WorkoutIntent';
     },
     handle(handlerInput) {
-        const speakOutput = handlerInput.t('HELLO_MSG');
+        return workoutBuilder.random(handlerInput);
+    }
+};
+
+/**
+ * Skips the current workout and randomly chooses another one
+ *
+ * @type {{canHandle(*): *, handle(*=): *}}
+ */
+const SkipIntentHandler = {
+    canHandle(handlerInput) {
+        return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest'
+            && Alexa.getIntentName(handlerInput.requestEnvelope) === 'SkipIntent';
+    },
+    handle(handlerInput) {
+        return workoutBuilder.random(handlerInput, true);
+    }
+};
+
+/**
+ * Gives the user an update on how many exercises they have completed
+ *
+ * @type {{canHandle(*): *, handle(*=): *}}
+ */
+const StatusIntentHandler = {
+    canHandle(handlerInput) {
+        return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest'
+            && Alexa.getIntentName(handlerInput.requestEnvelope) === 'StatusIntent';
+    },
+    handle(handlerInput) {
+        const session = sessionHandler.getSession(handlerInput);
+        const speakOutput = handlerInput.t('STATUS_MSG', {total: session.progress.total, skipped: session.progress.skippedTotal});
 
         return handlerInput.responseBuilder
             .speak(speakOutput)
-            //.reprompt('add a reprompt if you want to keep the session open for the user to respond')
+            .reprompt(speakOutput)
             .getResponse();
     }
 };
 
+/**
+ * Returns the general help message
+ *
+ * @type {{canHandle(*): *, handle(*): *}}
+ */
 const HelpIntentHandler = {
     canHandle(handlerInput) {
         return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest'
@@ -53,6 +111,11 @@ const HelpIntentHandler = {
     }
 };
 
+/**
+ * Cancels the current intent and exits the application
+ *
+ * @type {{canHandle(*): *, handle(*): *}}
+ */
 const CancelAndStopIntentHandler = {
     canHandle(handlerInput) {
         return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest'
@@ -60,17 +123,22 @@ const CancelAndStopIntentHandler = {
                 || Alexa.getIntentName(handlerInput.requestEnvelope) === 'AMAZON.StopIntent');
     },
     handle(handlerInput) {
-        const speakOutput = handlerInput.t('GOODBYE_MSG');
+        const session = sessionHandler.getSession(handlerInput);
+        const speakOutput = handlerInput.t('GOODBYE_MSG', {total: session.progress.total, skipped: session.progress.skippedTotal});
+        const cardTitle = handlerInput.t('GOODBYE_CARD_TITLE');
+        delete session.progress;
+        sessionHandler.setSession(handlerInput, session);
 
         return handlerInput.responseBuilder
             .speak(speakOutput)
+            .withSimpleCard(cardTitle, speakOutput)
             .getResponse();
     }
 };
 /* *
  * FallbackIntent triggers when a customer says something that doesn’t map to any intents in your skill
  * It must also be defined in the language model (if the locale supports it)
- * This handler can be safely added but will be ingnored in locales that do not support it yet 
+ * This handler can be safely added but will be ignored in locales that do not support it yet
  * */
 const FallbackIntentHandler = {
     canHandle(handlerInput) {
@@ -97,7 +165,12 @@ const SessionEndedRequestHandler = {
     },
     handle(handlerInput) {
         console.log(`~~~~ Session ended: ${JSON.stringify(handlerInput.requestEnvelope)}`);
-        // Any cleanup logic goes here.
+
+        const session = sessionHandler.getSession(handlerInput);
+        if (session.hasOwnProperty('progress')) {
+            delete session.progress;
+        }
+
         return handlerInput.responseBuilder.getResponse(); // notice we send an empty response
     }
 };
@@ -123,7 +196,7 @@ const IntentReflectorHandler = {
 /**
  * Generic error handling to capture any syntax or routing errors. If you receive an error
  * stating the request handler chain is not found, you have not implemented a handler for
- * the intent being invoked or included it in the skill builder below 
+ * the intent being invoked or included it in the skill builder below
  * */
 const ErrorHandler = {
     canHandle() {
@@ -154,12 +227,14 @@ const LocalisationRequestInterceptor = {
 /**
  * This handler acts as the entry point for your skill, routing all request and response
  * payloads to the handlers above. Make sure any new handlers or interceptors you've
- * defined are included below. The order matters - they're processed top to bottom 
+ * defined are included below. The order matters - they're processed top to bottom
  * */
 exports.handler = Alexa.SkillBuilders.custom()
     .addRequestHandlers(
         LaunchRequestHandler,
-        HelloWorldIntentHandler,
+        WorkoutIntentHandler,
+        SkipIntentHandler,
+        StatusIntentHandler,
         HelpIntentHandler,
         CancelAndStopIntentHandler,
         FallbackIntentHandler,
@@ -169,5 +244,5 @@ exports.handler = Alexa.SkillBuilders.custom()
         ErrorHandler)
     .addRequestInterceptors(
         LocalisationRequestInterceptor)
-    .withCustomUserAgent('sample/hello-world/v1.2')
+    .withCustomUserAgent('sixty-second-workout')
     .lambda();
